@@ -334,6 +334,21 @@ class OpenMax:
         if self.model is None:
             raise ValueError("OpenMax model not fitted. Call fit() first.")
 
+        feature_dim = self.model.means.shape[1]
+        num_classes = self.model.num_classes
+
+        # Allow callers to provide arguments out of order by checking the trailing
+        # dimensions against the fitted feature/logit shapes. This keeps backward
+        # compatibility with earlier call sites that invoked the method as
+        # predict(logits, features).
+        if logits.shape[-1] == feature_dim and features.shape[-1] == num_classes:
+            features, logits = logits, features
+        elif features.shape[-1] != feature_dim or logits.shape[-1] != num_classes:
+            raise ValueError(
+                "Expected features shape (*, {fd}) and logits shape (*, {nc}); got "
+                f"{features.shape} and {logits.shape} instead.".format(fd=feature_dim, nc=num_classes)
+            )
+
         features_np = features.cpu().numpy()
         logits_np = logits.cpu().numpy()
 
