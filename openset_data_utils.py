@@ -263,6 +263,11 @@ class OpenSetSplitter:
         known_classes_sorted = sorted(known_classes)
         label_map = {int(old): int(new) for new, old in enumerate(known_classes_sorted)}
 
+        # Store as instance attributes for later use
+        self.known_classes = known_classes_sorted
+        self.unknown_classes = sorted(unknown_classes)
+        self.label_map = label_map
+
         print(f"  - Known classes: {known_classes_sorted}")
         print(f"  - Unknown classes: {sorted(unknown_classes)}")
 
@@ -523,7 +528,7 @@ def create_longtail_openset_dataloaders(
         "test_size": len(test_dataset),
         "class_counts": train_dataset.class_counts,
         "imbalance_ratio": train_dataset.class_counts.max() / max(train_dataset.class_counts.min(), 1),
-        "label_map": splitter.split()[2],
+        "label_map": splitter.label_map,  # Use stored attribute instead of calling split() again
     }
 
     print("\n" + "=" * 80)
