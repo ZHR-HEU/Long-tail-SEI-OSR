@@ -188,6 +188,38 @@ class FeatureDiffusion(nn.Module):
 
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
 
+    def _embed_labels(
+        self, y: Optional[torch.Tensor], batch_size: int, device: torch.device
+    ) -> Optional[torch.Tensor]:
+        """Return class embeddings while gracefully handling unknown labels."""
+        if not self.conditional:
+            return None
+
+        if y is None:
+            raise ValueError("Class labels y must be provided in conditional mode")
+
+        if y.dim() > 1:
+            y = y.view(-1)
+        if y.numel() != batch_size:
+            raise ValueError(
+                f"Expected {batch_size} labels but received {y.numel()}"
+            )
+
+        y = y.to(device=device, dtype=torch.long)
+
+        invalid = (y < 0) | (y >= self.num_classes)
+        if invalid.any():
+            y_safe = y.clone()
+            y_safe[invalid] = 0
+            y_emb = self.class_embed(y_safe)
+            # Zero-out embeddings for invalid labels so they contribute no signal.
+            y_emb = y_emb.clone()
+            y_emb[invalid] = 0
+        else:
+            y_emb = self.class_embed(y)
+
+        return y_emb
+
     def predict_noise(self, x_t: torch.Tensor, t: torch.Tensor, y: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Predict noise at timestep t (the core denoising function).
@@ -202,9 +234,7 @@ class FeatureDiffusion(nn.Module):
 
         # Combine embeddings
         if self.conditional:
-            if y is None:
-                raise ValueError("Class labels y must be provided in conditional mode")
-            y_emb = self.class_embed(y)
+            y_emb = self._embed_labels(y, batch_size=x_t.size(0), device=x_t.device)
             condition = torch.cat([t_emb, y_emb], dim=1)
         else:
             condition = t_emb
