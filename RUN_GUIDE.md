@@ -408,7 +408,63 @@ model:
 - `"gn"`: GroupNorm
 - `"ln"`: LayerNorm
 
-### Q4: ImportError: No module named 'xxx'
+### Q4: ValueError: diffusion_model must be provided when use_diffusion=True
+
+**错误**: `ValueError: diffusion_model and features must be provided when use_diffusion=True`
+
+**原因**: Loss配置中启用了diffusion loss，但diffusion模型被禁用或未创建。
+
+**解决方法**:
+
+**选项1 - 禁用diffusion loss（推荐用于Stage-1）**:
+```yaml
+stage1:
+  loss:
+    loss_type: "focal"
+    use_diffusion: false      # ← 确保这是 false
+    use_contrastive: false
+    use_entropy: false
+```
+
+**选项2 - 启用diffusion模型（如需使用diffusion loss）**:
+```yaml
+stage1:
+  loss:
+    use_diffusion: true
+    lambda_diffusion: 0.1
+
+  diffusion:
+    enabled: true             # ← 启用diffusion模型
+    hidden_dims: [512, 256]
+    timesteps: 1000
+```
+
+**说明**:
+- Stage-1通常只需要基础分类损失，不需要diffusion
+- 如果要使用diffusion loss，必须同时启用diffusion模型
+- 确保配置文件格式正确（见下方完整示例）
+
+**完整的loss配置格式**:
+```yaml
+loss:
+  loss_type: "focal"          # 基础损失: ce, focal, ldam, balanced_softmax, cb
+  use_diffusion: false        # 是否使用diffusion loss
+  use_contrastive: false      # 是否使用对比学习loss
+  use_entropy: false          # 是否使用熵正则
+  use_objectosphere: false    # 是否使用objectosphere loss
+
+  # Loss权重（如果启用相应loss）
+  lambda_diffusion: 0.1
+  lambda_contrastive: 0.1
+  lambda_entropy: 0.01
+  lambda_objectosphere: 0.1
+
+  # 基础loss的参数
+  gamma: 2.0                  # Focal loss参数
+  alpha: 0.25
+```
+
+### Q5: ImportError: No module named 'xxx'
 
 **解决方法**:
 ```bash
@@ -419,7 +475,7 @@ pip install scipy h5py pyyaml scikit-learn
 conda install scipy h5py pyyaml scikit-learn
 ```
 
-### Q5: Stage-1训练很慢
+### Q6: Stage-1训练很慢
 
 **可能原因和解决方法**:
 
@@ -441,7 +497,7 @@ model:
 device: "cuda"         # 改用GPU
 ```
 
-### Q6: 开集检测效果不好 (AUROC < 0.7)
+### Q7: 开集检测效果不好 (AUROC < 0.7)
 
 **调优建议**:
 
@@ -470,7 +526,7 @@ stage2:
   sampling_strategy: "class_uniform"  # 尝试完全平衡采样
 ```
 
-### Q7: 尾部类别准确率很低
+### Q8: 尾部类别准确率很低
 
 **调优建议**:
 
@@ -489,7 +545,7 @@ stage2:
   epochs: 300
 ```
 
-### Q8: 如何可视化训练过程？
+### Q9: 如何可视化训练过程？
 
 ```bash
 # 1. 实时监控训练日志
@@ -502,7 +558,7 @@ tensorboard --logdir ./checkpoints
 cat ./checkpoints/stage2/final_results.txt
 ```
 
-### Q9: 如何恢复中断的训练？
+### Q10: 如何恢复中断的训练？
 
 目前代码不支持自动恢复，但可以手动调整：
 
