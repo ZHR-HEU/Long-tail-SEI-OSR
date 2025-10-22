@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 import numpy as np
 import torch
@@ -82,6 +82,13 @@ class LongTailOpenSetTrainer:
             "train_loss": [],
             "val_metrics": [],
         }
+        self.log_file = os.path.join(self.checkpoint_dir, "training_metrics.csv")
+        if os.path.exists(self.log_file):
+            os.remove(self.log_file)
+        self._log_header_written = False
+        self._log_columns: List[str] = []
+        self._train_metric_keys: List[str] = []
+        self._val_metric_keys: List[str] = []
 
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """Train for one epoch."""
@@ -135,6 +142,49 @@ class LongTailOpenSetTrainer:
         avg_components = {k: v / num_batches for k, v in loss_components.items()}
 
         return {"loss": avg_loss, **avg_components}
+
+    def _get_current_lr(self) -> float:
+        for group in self.optimizer.param_groups:
+            if "lr" in group:
+                return group["lr"]
+        return 0.0
+
+    def _log_epoch_metrics(
+        self,
+        epoch: int,
+        train_metrics: Dict[str, float],
+        val_metrics: Dict[str, float],
+    ) -> None:
+        """Persist epoch-level metrics for later visualization."""
+
+        lr = self._get_current_lr()
+
+        if not self._log_header_written:
+            loss_first = ["loss"] if "loss" in train_metrics else []
+            other_train_keys = [k for k in train_metrics.keys() if k != "loss"]
+            other_train_keys.sort()
+            self._train_metric_keys = loss_first + other_train_keys
+            self._val_metric_keys = list(val_metrics.keys())
+            train_cols = [f"train_{k}" for k in self._train_metric_keys]
+            val_cols = [f"val_{k}" for k in self._val_metric_keys]
+            self._log_columns = ["epoch", "lr"] + train_cols + val_cols
+            with open(self.log_file, "w", encoding="utf-8") as f:
+                f.write(",".join(self._log_columns) + "\n")
+            self._log_header_written = True
+
+        row_values = [
+            str(epoch),
+            f"{lr:.8f}",
+        ]
+
+        for key in self._train_metric_keys:
+            row_values.append(f"{train_metrics.get(key, 0.0):.6f}")
+
+        for key in self._val_metric_keys:
+            row_values.append(f"{val_metrics.get(key, 0.0):.6f}")
+
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(",".join(row_values) + "\n")
 
     @torch.no_grad()
     def extract_features(self, loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -249,6 +299,7 @@ class LongTailOpenSetTrainer:
             "oscr": metrics.oscr,
             "overall_acc": metrics.overall_accuracy,
             "many_shot_acc": metrics.many_shot_acc,
+            "medium_shot_acc": metrics.medium_shot_acc,
             "few_shot_acc": metrics.few_shot_acc,
         }
 
@@ -311,6 +362,16 @@ class LongTailOpenSetTrainer:
                 print(f"    AUROC: {val_metrics['auroc']:.4f}")
                 print(f"    OSCR: {val_metrics['oscr']:.4f}")
                 print(f"    Overall Acc: {val_metrics['overall_acc']:.4f}")
+                print(f"  Long-Tail Accuracy:")
+                print(f"    Head (Many-shot):   {val_metrics['many_shot_acc']:.4f}")
+                print(f"    Middle (Medium-shot): {val_metrics['medium_shot_acc']:.4f}")
+                print(f"    Tail (Few-shot):   {val_metrics['few_shot_acc']:.4f}")
+
+                self._log_epoch_metrics(
+                    epoch=epoch + 1,
+                    train_metrics=train_metrics,
+                    val_metrics=val_metrics,
+                )
 
                 # Check for improvement
                 current_metric = val_metrics[metric_for_best]
