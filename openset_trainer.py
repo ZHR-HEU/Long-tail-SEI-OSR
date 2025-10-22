@@ -15,7 +15,6 @@ Date: 2025
 from __future__ import annotations
 
 import os
-import time
 from typing import Dict, Any, Optional, Tuple
 
 import numpy as np
@@ -29,6 +28,7 @@ from tqdm import tqdm
 from openset_losses import LongTailOpenSetLoss
 from openset_eval import evaluate_model, print_metrics
 from openset_methods import create_openset_detector
+from trainer_logging import TrainingLogger
 
 
 # =============================================================================
@@ -83,6 +83,23 @@ class LongTailOpenSetTrainer:
             "val_metrics": [],
         }
 
+        log_path = os.path.join(self.checkpoint_dir, "training.log")
+        extra_columns = {
+            "closed_set_acc": "Closed-set Acc (%)",
+            "overall_acc": "Overall Acc (%)",
+            "auroc": "AUROC (%)",
+            "aupr": "AUPR (%)",
+            "oscr": "OSCR (%)",
+            "many_shot_acc": "Head Acc (%)",
+            "medium_shot_acc": "Medium Acc (%)",
+            "few_shot_acc": "Tail Acc (%)",
+        }
+        self.logger = TrainingLogger(
+            log_file=log_path,
+            console_interval=log_interval,
+            extra_columns=extra_columns,
+        )
+
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """Train for one epoch."""
         self.model.train()
@@ -90,11 +107,17 @@ class LongTailOpenSetTrainer:
             self.diffusion_model.train()
 
         total_loss = 0.0
-        loss_components = {}
-        num_batches = 0
+        loss_components: Dict[str, float] = {}
+        total_correct = 0
+        total_samples = 0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {self.current_epoch + 1} [Train]")
-        for batch_idx, batch in enumerate(pbar):
+        try:
+            total_batches = len(train_loader)
+        except TypeError:
+            total_batches = None
+        processed_batches = 0
+
+        for batch_idx, batch in enumerate(train_loader):
             x, y = batch[:2]
             x, y = x.to(self.device), y.to(self.device)
 
@@ -118,23 +141,40 @@ class LongTailOpenSetTrainer:
             loss.backward()
             self.optimizer.step()
 
-            # Logging
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
             for key, val in loss_dict.items():
-                if key not in loss_components:
-                    loss_components[key] = 0.0
-                loss_components[key] += val
+                loss_components[key] = loss_components.get(key, 0.0) + val
 
-            num_batches += 1
+            with torch.no_grad():
+                preds = logits.argmax(dim=1)
+                total_correct += (preds == y).sum().item()
+                total_samples += y.size(0)
 
-            # Update progress bar
-            pbar.set_postfix({"loss": loss.item()})
+            if self.logger is not None and total_batches is not None:
+                running_acc = 100.0 * total_correct / max(total_samples, 1)
+                self.logger.log_training_step(
+                    batch_idx,
+                    total_batches,
+                    batch_loss,
+                    running_acc,
+                    self._get_current_lr(),
+                )
 
-        # Average losses
+            processed_batches += 1
+
+        num_batches = max(total_batches or processed_batches, 1)
         avg_loss = total_loss / num_batches
         avg_components = {k: v / num_batches for k, v in loss_components.items()}
+        train_acc = total_correct / max(total_samples, 1)
 
-        return {"loss": avg_loss, **avg_components}
+        return {"loss": avg_loss, "acc": train_acc, **avg_components}
+
+    def _get_current_lr(self) -> float:
+        for group in self.optimizer.param_groups:
+            if "lr" in group:
+                return group["lr"]
+        return 0.0
 
     @torch.no_grad()
     def extract_features(self, loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -249,6 +289,7 @@ class LongTailOpenSetTrainer:
             "oscr": metrics.oscr,
             "overall_acc": metrics.overall_accuracy,
             "many_shot_acc": metrics.many_shot_acc,
+            "medium_shot_acc": metrics.medium_shot_acc,
             "few_shot_acc": metrics.few_shot_acc,
         }
 
@@ -287,53 +328,88 @@ class LongTailOpenSetTrainer:
 
         for epoch in range(num_epochs):
             self.current_epoch = epoch
+            current_lr = self._get_current_lr()
+            self.logger.start_epoch(epoch + 1, current_lr)
 
             # Train
             train_metrics = self.train_epoch(train_loader)
             self.history["train_loss"].append(train_metrics["loss"])
 
-            # Validate
-            if (epoch + 1) % self.log_interval == 0 or epoch == num_epochs - 1:
-                print(f"\n[Epoch {epoch + 1}/{num_epochs}]")
-                print(f"  Train Loss: {train_metrics['loss']:.4f}")
-
+            should_validate = (epoch + 1) % self.log_interval == 0 or epoch == num_epochs - 1
+            if should_validate:
                 # Re-fit detector periodically
                 if epoch % 20 == 0 and epoch > 0:
-                    openset_detector = self.fit_openset_detector(train_loader, detector_type="openmax")
+                    openset_detector = self.fit_openset_detector(
+                        train_loader, detector_type="openmax"
+                    )
 
                 val_metrics = self.validate(
                     val_loader, openset_detector, class_counts, num_known_classes
                 )
                 self.history["val_metrics"].append(val_metrics)
 
-                print(f"  Val Metrics:")
-                print(f"    Closed-Set Acc: {val_metrics['closed_set_acc']:.4f}")
-                print(f"    AUROC: {val_metrics['auroc']:.4f}")
-                print(f"    OSCR: {val_metrics['oscr']:.4f}")
-                print(f"    Overall Acc: {val_metrics['overall_acc']:.4f}")
+                train_log_metrics = {
+                    "loss": train_metrics.get("loss", 0.0),
+                    "acc": train_metrics.get("acc", 0.0) * 100.0,
+                }
+                val_log_metrics = {
+                    "loss": 0.0,
+                    "acc": val_metrics["closed_set_acc"] * 100.0,
+                    "balanced_acc": val_metrics["overall_acc"] * 100.0,
+                }
+                group_metrics = {
+                    "majority": {
+                        "accuracy": val_metrics["many_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                    "medium": {
+                        "accuracy": val_metrics["medium_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                    "minority": {
+                        "accuracy": val_metrics["few_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                }
+                extra_metrics = {
+                    "closed_set_acc": val_metrics["closed_set_acc"] * 100.0,
+                    "overall_acc": val_metrics["overall_acc"] * 100.0,
+                    "auroc": val_metrics["auroc"] * 100.0,
+                    "aupr": val_metrics["aupr"] * 100.0,
+                    "oscr": val_metrics["oscr"] * 100.0,
+                    "many_shot_acc": val_metrics["many_shot_acc"] * 100.0,
+                    "medium_shot_acc": val_metrics["medium_shot_acc"] * 100.0,
+                    "few_shot_acc": val_metrics["few_shot_acc"] * 100.0,
+                }
 
-                # Check for improvement
+                self.logger.log_epoch_end(
+                    epoch + 1,
+                    train_log_metrics,
+                    val_log_metrics,
+                    group_metrics,
+                    self._get_current_lr(),
+                    extra_metrics=extra_metrics,
+                )
+
                 current_metric = val_metrics[metric_for_best]
                 if current_metric > best_metric:
                     best_metric = current_metric
                     patience_counter = 0
-
-                    # Save best model
                     self.save_checkpoint("best_model.pth", val_metrics)
                     print(f"  -> New best {metric_for_best}: {current_metric:.4f}")
                 else:
                     patience_counter += 1
 
-                # Early stopping
                 if patience_counter >= early_stopping_patience:
                     print(f"\n[Early stopping triggered after {epoch + 1} epochs]")
                     break
 
-            # Learning rate scheduling
             if scheduler is not None:
                 scheduler.step()
 
-            # Save periodic checkpoint
             if (epoch + 1) % 50 == 0:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
 
@@ -383,6 +459,24 @@ class LongTailOpenSetTrainer:
 # Helper Functions
 # =============================================================================
 
+def _as_float(value: Any, name: str) -> float:
+    """Convert configuration values to float.
+
+    The YAML configuration used by the demo occasionally stores numeric
+    hyper-parameters such as the learning rate as strings (e.g. ``"1e-3"``).
+    PyTorch's optimisers expect real numbers, so we normalise the inputs here
+    to provide a friendlier error message and avoid ``TypeError`` during
+    optimiser construction.
+    """
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise TypeError(
+            f"Expected a numeric value for '{name}', but received {value!r}."
+        ) from None
+
+
 def create_optimizer(
     model: nn.Module,
     diffusion_model: Optional[nn.Module],
@@ -396,12 +490,28 @@ def create_optimizer(
     if diffusion_model is not None:
         params += list(diffusion_model.parameters())
 
+    lr_value = _as_float(lr, "learning rate")
+    weight_decay_value = _as_float(weight_decay, "weight decay")
+
     if optimizer_type == "Adam":
-        optimizer = optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+        )
     elif optimizer_type == "SGD":
-        optimizer = optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=0.9)
+        optimizer = optim.SGD(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+            momentum=0.9,
+        )
     elif optimizer_type == "AdamW":
-        optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+        )
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
 
