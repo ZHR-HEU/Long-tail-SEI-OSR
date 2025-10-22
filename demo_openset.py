@@ -91,9 +91,18 @@ def create_model_with_features(config: Dict[str, Any], num_classes: int, input_s
     base_model_name = config['model']['name']
 
     if base_model_name == "ConvNetADSB":
+        # ``ConvNetADSB`` expects the keyword ``dropout_rate``.  The demo
+        # configuration, however, follows the convention used elsewhere in the
+        # project (`dropout`).  To stay backward compatible we transparently
+        # map both keys here.
+        dropout_rate = config['model'].get(
+            'dropout_rate',
+            config['model'].get('dropout', 0.0),
+        )
+
         model = ConvNetADSB(
             num_classes=num_classes,
-            dropout=config['model']['dropout'],
+            dropout_rate=dropout_rate,
             use_attention=config['model']['use_attention'],
             norm_kind=config['model']['norm_kind'],
         )
@@ -107,45 +116,12 @@ def create_model_with_features(config: Dict[str, Any], num_classes: int, input_s
             self.base_model = base_model
 
         def forward(self, x):
-            return self.base_model(x)
+            logits, _ = self.base_model(x)
+            return logits
 
         def forward_with_features(self, x):
             """Forward pass returning both logits and features."""
-            # For ConvNetADSB, we need to extract features before the final classifier
-            # Assuming ConvNetADSB has self.features and self.classifier
-            if hasattr(self.base_model, 'features') and hasattr(self.base_model, 'classifier'):
-                features = self.base_model.features(x)
-                features = features.view(features.size(0), -1)  # Flatten
-                logits = self.base_model.classifier(features)
-            else:
-                # Fallback: hook the penultimate layer
-                features_list = []
-
-                def hook(module, input, output):
-                    features_list.append(output)
-
-                # Register hook on last layer before classifier
-                # This is model-specific; adjust as needed
-                if hasattr(self.base_model, 'fc'):
-                    handle = self.base_model.fc.register_forward_hook(hook)
-                elif hasattr(self.base_model, 'classifier'):
-                    # Hook the input to classifier
-                    handle = self.base_model.classifier.register_forward_hook(
-                        lambda m, i, o: features_list.append(i[0])
-                    )
-                else:
-                    raise ValueError("Cannot find feature layer in model")
-
-                logits = self.base_model(x)
-                handle.remove()
-
-                if len(features_list) == 0:
-                    raise ValueError("Failed to extract features")
-
-                features = features_list[0]
-                if len(features.shape) > 2:
-                    features = features.view(features.size(0), -1)
-
+            logits, features = self.base_model(x)
             return logits, features
 
     wrapped_model = ModelWithFeatures(model)
@@ -219,6 +195,7 @@ def main(config: Dict[str, Any]):
         num_classes=num_known_classes,
         input_shape=input_shape[1:],
     )
+    model = model.to(device)
 
     print(f"Model created: {config['model']['name']}")
 
