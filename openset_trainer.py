@@ -15,8 +15,7 @@ Date: 2025
 from __future__ import annotations
 
 import os
-import time
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 
 import numpy as np
 import torch
@@ -29,6 +28,7 @@ from tqdm import tqdm
 from openset_losses import LongTailOpenSetLoss
 from openset_eval import evaluate_model, print_metrics
 from openset_methods import create_openset_detector
+from trainer_logging import TrainingLogger
 
 
 # =============================================================================
@@ -82,13 +82,23 @@ class LongTailOpenSetTrainer:
             "train_loss": [],
             "val_metrics": [],
         }
-        self.log_file = os.path.join(self.checkpoint_dir, "training_metrics.csv")
-        if os.path.exists(self.log_file):
-            os.remove(self.log_file)
-        self._log_header_written = False
-        self._log_columns: List[str] = []
-        self._train_metric_keys: List[str] = []
-        self._val_metric_keys: List[str] = []
+
+        log_path = os.path.join(self.checkpoint_dir, "training.log")
+        extra_columns = {
+            "closed_set_acc": "Closed-set Acc (%)",
+            "overall_acc": "Overall Acc (%)",
+            "auroc": "AUROC (%)",
+            "aupr": "AUPR (%)",
+            "oscr": "OSCR (%)",
+            "many_shot_acc": "Head Acc (%)",
+            "medium_shot_acc": "Medium Acc (%)",
+            "few_shot_acc": "Tail Acc (%)",
+        }
+        self.logger = TrainingLogger(
+            log_file=log_path,
+            console_interval=log_interval,
+            extra_columns=extra_columns,
+        )
 
     def train_epoch(self, train_loader: DataLoader) -> Dict[str, float]:
         """Train for one epoch."""
@@ -97,11 +107,17 @@ class LongTailOpenSetTrainer:
             self.diffusion_model.train()
 
         total_loss = 0.0
-        loss_components = {}
-        num_batches = 0
+        loss_components: Dict[str, float] = {}
+        total_correct = 0
+        total_samples = 0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {self.current_epoch + 1} [Train]")
-        for batch_idx, batch in enumerate(pbar):
+        try:
+            total_batches = len(train_loader)
+        except TypeError:
+            total_batches = None
+        processed_batches = 0
+
+        for batch_idx, batch in enumerate(train_loader):
             x, y = batch[:2]
             x, y = x.to(self.device), y.to(self.device)
 
@@ -125,66 +141,40 @@ class LongTailOpenSetTrainer:
             loss.backward()
             self.optimizer.step()
 
-            # Logging
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
             for key, val in loss_dict.items():
-                if key not in loss_components:
-                    loss_components[key] = 0.0
-                loss_components[key] += val
+                loss_components[key] = loss_components.get(key, 0.0) + val
 
-            num_batches += 1
+            with torch.no_grad():
+                preds = logits.argmax(dim=1)
+                total_correct += (preds == y).sum().item()
+                total_samples += y.size(0)
 
-            # Update progress bar
-            pbar.set_postfix({"loss": loss.item()})
+            if self.logger is not None and total_batches is not None:
+                running_acc = 100.0 * total_correct / max(total_samples, 1)
+                self.logger.log_training_step(
+                    batch_idx,
+                    total_batches,
+                    batch_loss,
+                    running_acc,
+                    self._get_current_lr(),
+                )
 
-        # Average losses
+            processed_batches += 1
+
+        num_batches = max(total_batches or processed_batches, 1)
         avg_loss = total_loss / num_batches
         avg_components = {k: v / num_batches for k, v in loss_components.items()}
+        train_acc = total_correct / max(total_samples, 1)
 
-        return {"loss": avg_loss, **avg_components}
+        return {"loss": avg_loss, "acc": train_acc, **avg_components}
 
     def _get_current_lr(self) -> float:
         for group in self.optimizer.param_groups:
             if "lr" in group:
                 return group["lr"]
         return 0.0
-
-    def _log_epoch_metrics(
-        self,
-        epoch: int,
-        train_metrics: Dict[str, float],
-        val_metrics: Dict[str, float],
-    ) -> None:
-        """Persist epoch-level metrics for later visualization."""
-
-        lr = self._get_current_lr()
-
-        if not self._log_header_written:
-            loss_first = ["loss"] if "loss" in train_metrics else []
-            other_train_keys = [k for k in train_metrics.keys() if k != "loss"]
-            other_train_keys.sort()
-            self._train_metric_keys = loss_first + other_train_keys
-            self._val_metric_keys = list(val_metrics.keys())
-            train_cols = [f"train_{k}" for k in self._train_metric_keys]
-            val_cols = [f"val_{k}" for k in self._val_metric_keys]
-            self._log_columns = ["epoch", "lr"] + train_cols + val_cols
-            with open(self.log_file, "w", encoding="utf-8") as f:
-                f.write(",".join(self._log_columns) + "\n")
-            self._log_header_written = True
-
-        row_values = [
-            str(epoch),
-            f"{lr:.8f}",
-        ]
-
-        for key in self._train_metric_keys:
-            row_values.append(f"{train_metrics.get(key, 0.0):.6f}")
-
-        for key in self._val_metric_keys:
-            row_values.append(f"{val_metrics.get(key, 0.0):.6f}")
-
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(",".join(row_values) + "\n")
 
     @torch.no_grad()
     def extract_features(self, loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -338,63 +328,88 @@ class LongTailOpenSetTrainer:
 
         for epoch in range(num_epochs):
             self.current_epoch = epoch
+            current_lr = self._get_current_lr()
+            self.logger.start_epoch(epoch + 1, current_lr)
 
             # Train
             train_metrics = self.train_epoch(train_loader)
             self.history["train_loss"].append(train_metrics["loss"])
 
-            # Validate
-            if (epoch + 1) % self.log_interval == 0 or epoch == num_epochs - 1:
-                print(f"\n[Epoch {epoch + 1}/{num_epochs}]")
-                print(f"  Train Loss: {train_metrics['loss']:.4f}")
-
+            should_validate = (epoch + 1) % self.log_interval == 0 or epoch == num_epochs - 1
+            if should_validate:
                 # Re-fit detector periodically
                 if epoch % 20 == 0 and epoch > 0:
-                    openset_detector = self.fit_openset_detector(train_loader, detector_type="openmax")
+                    openset_detector = self.fit_openset_detector(
+                        train_loader, detector_type="openmax"
+                    )
 
                 val_metrics = self.validate(
                     val_loader, openset_detector, class_counts, num_known_classes
                 )
                 self.history["val_metrics"].append(val_metrics)
 
-                print(f"  Val Metrics:")
-                print(f"    Closed-Set Acc: {val_metrics['closed_set_acc']:.4f}")
-                print(f"    AUROC: {val_metrics['auroc']:.4f}")
-                print(f"    OSCR: {val_metrics['oscr']:.4f}")
-                print(f"    Overall Acc: {val_metrics['overall_acc']:.4f}")
-                print(f"  Long-Tail Accuracy:")
-                print(f"    Head (Many-shot):   {val_metrics['many_shot_acc']:.4f}")
-                print(f"    Middle (Medium-shot): {val_metrics['medium_shot_acc']:.4f}")
-                print(f"    Tail (Few-shot):   {val_metrics['few_shot_acc']:.4f}")
+                train_log_metrics = {
+                    "loss": train_metrics.get("loss", 0.0),
+                    "acc": train_metrics.get("acc", 0.0) * 100.0,
+                }
+                val_log_metrics = {
+                    "loss": 0.0,
+                    "acc": val_metrics["closed_set_acc"] * 100.0,
+                    "balanced_acc": val_metrics["overall_acc"] * 100.0,
+                }
+                group_metrics = {
+                    "majority": {
+                        "accuracy": val_metrics["many_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                    "medium": {
+                        "accuracy": val_metrics["medium_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                    "minority": {
+                        "accuracy": val_metrics["few_shot_acc"] * 100.0,
+                        "f1": 0.0,
+                        "support": 0,
+                    },
+                }
+                extra_metrics = {
+                    "closed_set_acc": val_metrics["closed_set_acc"] * 100.0,
+                    "overall_acc": val_metrics["overall_acc"] * 100.0,
+                    "auroc": val_metrics["auroc"] * 100.0,
+                    "aupr": val_metrics["aupr"] * 100.0,
+                    "oscr": val_metrics["oscr"] * 100.0,
+                    "many_shot_acc": val_metrics["many_shot_acc"] * 100.0,
+                    "medium_shot_acc": val_metrics["medium_shot_acc"] * 100.0,
+                    "few_shot_acc": val_metrics["few_shot_acc"] * 100.0,
+                }
 
-                self._log_epoch_metrics(
-                    epoch=epoch + 1,
-                    train_metrics=train_metrics,
-                    val_metrics=val_metrics,
+                self.logger.log_epoch_end(
+                    epoch + 1,
+                    train_log_metrics,
+                    val_log_metrics,
+                    group_metrics,
+                    self._get_current_lr(),
+                    extra_metrics=extra_metrics,
                 )
 
-                # Check for improvement
                 current_metric = val_metrics[metric_for_best]
                 if current_metric > best_metric:
                     best_metric = current_metric
                     patience_counter = 0
-
-                    # Save best model
                     self.save_checkpoint("best_model.pth", val_metrics)
                     print(f"  -> New best {metric_for_best}: {current_metric:.4f}")
                 else:
                     patience_counter += 1
 
-                # Early stopping
                 if patience_counter >= early_stopping_patience:
                     print(f"\n[Early stopping triggered after {epoch + 1} epochs]")
                     break
 
-            # Learning rate scheduling
             if scheduler is not None:
                 scheduler.step()
 
-            # Save periodic checkpoint
             if (epoch + 1) % 50 == 0:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
 
