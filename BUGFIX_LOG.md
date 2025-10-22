@@ -178,6 +178,70 @@ TypeError: ADSBSignalDataset.__init__() got an unexpected keyword argument 'alph
 
 ---
 
+## 2025-01 - AttributeError: label_map
+
+### Issue
+修复参数传递后，运行时遇到第三个错误：
+
+```
+AttributeError: 'OpenSetSplitter' object has no attribute 'label_map'
+```
+
+错误发生在创建长尾分布时访问 `splitter.label_map`。
+
+### Root Cause
+`OpenSetSplitter.split()` 方法创建了 `label_map`，但只是返回它，没有存储为实例属性。
+
+```python
+def split(self):
+    # ... 创建 label_map
+    label_map = {...}
+    return known_classes, unknown_classes, label_map  # 只返回，未存储
+```
+
+后续代码尝试访问：
+```python
+splitter.label_map  # AttributeError! 属性不存在
+```
+
+### Solution
+在提交 `928a6da` 中，将返回值同时存储为实例属性：
+
+```python
+def split(self):
+    # ... 创建 label_map
+    label_map = {int(old): int(new) for new, old in enumerate(known_classes_sorted)}
+
+    # ✅ 存储为实例属性
+    self.known_classes = known_classes_sorted
+    self.unknown_classes = sorted(unknown_classes)
+    self.label_map = label_map
+
+    return known_classes_sorted, sorted(unknown_classes), label_map
+```
+
+同时修复了 info 字典中的冗余调用：
+```python
+# 修改前 ❌
+"label_map": splitter.split()[2],  # 重复调用 split()
+
+# 修改后 ✅
+"label_map": splitter.label_map,   # 直接使用存储的属性
+```
+
+### Benefits
+1. **修复错误**：代码可以正常访问 `label_map`
+2. **避免重复计算**：不需要重新调用 `split()`
+3. **更好的封装**：split 结果作为对象状态保存
+
+### Files Changed
+- `openset_data_utils.py`: 在 `split()` 中存储实例属性
+
+### Status
+✅ **已修复** - 提交 `928a6da`
+
+---
+
 ## Future Prevention
 
 为避免类似问题，建议：
