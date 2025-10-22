@@ -26,7 +26,8 @@ device: "cuda"
 # Data Configuration
 # -----------------------------------------------------------------------------
 data:
-  path_train: "./data/adsb_signals_train.pt"
+  path_train: "/home/dell/md3/zhahaoran/data/ADS-B_Train_100X360-2_5-10-15-20dB.mat"
+  path_test: "/home/dell/md3/zhahaoran/data/ADS-B_test_100X40_5-10-15-20dB.mat"
   num_known_classes: 6          # Number of known classes
   split_protocol: "random"      # "random" or "semantic"
   imbalance_ratio: 100.0        # Long-tail imbalance ratio
