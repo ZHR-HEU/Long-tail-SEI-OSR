@@ -383,6 +383,24 @@ class LongTailOpenSetTrainer:
 # Helper Functions
 # =============================================================================
 
+def _as_float(value: Any, name: str) -> float:
+    """Convert configuration values to float.
+
+    The YAML configuration used by the demo occasionally stores numeric
+    hyper-parameters such as the learning rate as strings (e.g. ``"1e-3"``).
+    PyTorch's optimisers expect real numbers, so we normalise the inputs here
+    to provide a friendlier error message and avoid ``TypeError`` during
+    optimiser construction.
+    """
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise TypeError(
+            f"Expected a numeric value for '{name}', but received {value!r}."
+        ) from None
+
+
 def create_optimizer(
     model: nn.Module,
     diffusion_model: Optional[nn.Module],
@@ -396,12 +414,28 @@ def create_optimizer(
     if diffusion_model is not None:
         params += list(diffusion_model.parameters())
 
+    lr_value = _as_float(lr, "learning rate")
+    weight_decay_value = _as_float(weight_decay, "weight decay")
+
     if optimizer_type == "Adam":
-        optimizer = optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+        )
     elif optimizer_type == "SGD":
-        optimizer = optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=0.9)
+        optimizer = optim.SGD(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+            momentum=0.9,
+        )
     elif optimizer_type == "AdamW":
-        optimizer = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(
+            params,
+            lr=lr_value,
+            weight_decay=weight_decay_value,
+        )
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
 

@@ -420,6 +420,24 @@ def evaluate_model(
     all_scores = []
     all_labels = []
 
+    def _call_predict(detector, logits_tensor, feature_tensor=None):
+        predict_fn = getattr(detector, "predict")
+
+        if feature_tensor is not None:
+            call_strategies = (
+                lambda: predict_fn(logits=logits_tensor, features=feature_tensor),
+                lambda: predict_fn(features=feature_tensor, logits=logits_tensor),
+                lambda: predict_fn(logits_tensor, feature_tensor),
+                lambda: predict_fn(feature_tensor, logits_tensor),
+            )
+            for call in call_strategies:
+                try:
+                    return call()
+                except TypeError:
+                    continue
+
+        return predict_fn(logits_tensor)
+
     for batch in dataloader:
         if len(batch) == 2:
             x, y = batch
@@ -446,10 +464,10 @@ def evaluate_model(
                 # Convert to confidence score (lower error = higher confidence)
                 scores_batch = -recon_errors.cpu().numpy()
                 # Still need predictions from detector
-                _, predictions_batch = openset_detector.predict(logits)
+                _, predictions_batch = _call_predict(openset_detector, logits, features)
                 predictions_batch = predictions_batch.cpu().numpy()
             else:
-                scores_batch, predictions_batch = openset_detector.predict(logits, features)
+                scores_batch, predictions_batch = _call_predict(openset_detector, logits, features)
                 if isinstance(scores_batch, torch.Tensor):
                     scores_batch = scores_batch.cpu().numpy()
                 if isinstance(predictions_batch, torch.Tensor):

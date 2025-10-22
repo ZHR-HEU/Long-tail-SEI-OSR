@@ -224,7 +224,10 @@ class ClassBalancedContrastiveLoss(nn.Module):
 
         # Apply class weights if available
         if self.class_weights is not None:
-            weights = self.class_weights[labels.squeeze()]
+            # Ensure the cached weights live on the same device as the features
+            weights = self.class_weights.to(device)
+            label_indices = labels.view(-1).to(torch.long)
+            weights = weights[label_indices]
             mean_log_prob_pos = mean_log_prob_pos * weights
 
         # Loss
