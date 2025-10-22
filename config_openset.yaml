@@ -1,0 +1,202 @@
+# ============================================================
+# Configuration for Long-Tail Open-Set Recognition
+# ============================================================
+
+exp_name: "longtail_openset_diffusion"
+seed: 42
+device: "cuda"
+amp: false  # Automatic Mixed Precision
+console_log_interval: 10
+
+# ------------------------------------------------------------
+# Data Configuration
+# ------------------------------------------------------------
+data:
+  # Data path (replace with your data)
+  path_train: "/path/to/your/train_data.mat"
+  path_test: "/path/to/your/test_data.mat"
+
+  # Open-set configuration
+  num_known_classes: 6  # Number of classes to use as "known"
+  split_protocol: "random"  # random | head_known | tail_known | stratified
+
+  # Long-tail configuration
+  imbalance_ratio: 100.0  # Ratio between head and tail classes
+
+  # Data loading
+  batch_size: 256
+  num_workers: 4
+  pin_memory: true
+  drop_last: true
+
+  # Preprocessing
+  target_length: 4800
+  normalize: true
+  augmentation: true
+
+  # Sampling strategy for long-tail
+  sampling_strategy: "progressive_power"  # none | inv_freq | class_uniform | sqrt | power | progressive_power
+  alpha_start: 0.5
+  alpha_end: 0.0
+
+# ------------------------------------------------------------
+# Model Configuration
+# ------------------------------------------------------------
+model:
+  name: "ConvNetADSB"  # Use existing model from models.py
+  dropout: 0.1
+  use_attention: true
+  norm_kind: "auto"
+
+  # Feature dimension (auto-detected, or specify manually)
+  feature_dim: null  # Will be auto-detected
+
+# ------------------------------------------------------------
+# Diffusion Model Configuration
+# ------------------------------------------------------------
+diffusion:
+  enabled: true
+  feature_dim: 256  # Should match model's feature dim
+  hidden_dims: [512, 256, 512]
+  timesteps: 1000
+  beta_schedule: "cosine"  # linear | cosine
+  conditional: true  # Use class-conditional diffusion
+  dropout: 0.1
+  enhanced: true  # Use multi-timestep enhanced version
+
+# ------------------------------------------------------------
+# Open-Set Detection Configuration
+# ------------------------------------------------------------
+openset:
+  # Detector type: msp | odin | energy | openmax | mahalanobis
+  detector_type: "openmax"
+
+  # Detector-specific parameters
+  openmax:
+    alpha: 10  # Number of top classes to revise
+    tailsize: 20  # Number of samples for Weibull fitting
+
+  odin:
+    temperature: 1000.0
+    epsilon: 0.0012
+    threshold: 0.5
+
+  energy:
+    threshold: -10.0
+    temperature: 1.0
+
+  mahalanobis:
+    threshold: 10.0
+
+  msp:
+    threshold: 0.5
+
+# ------------------------------------------------------------
+# Loss Configuration
+# ------------------------------------------------------------
+loss:
+  # Base classification loss: ce | focal | ldam | balanced_softmax | cb
+  loss_type: "balanced_softmax"
+
+  # Joint loss components
+  use_diffusion: true
+  use_contrastive: true
+  use_entropy: false
+  use_objectosphere: false
+
+  # Loss weights
+  lambda_diffusion: 0.1
+  lambda_contrastive: 0.1
+  lambda_entropy: 0.01
+  lambda_objectosphere: 0.1
+
+  # Base loss parameters
+  focal:
+    alpha: 0.25
+    gamma: 2.0
+
+  ldam:
+    max_m: 0.5
+    s: 30
+
+  cb:
+    beta: 0.9999
+    loss_type: "focal"
+
+# ------------------------------------------------------------
+# Training Configuration
+# ------------------------------------------------------------
+training:
+  epochs: 200
+  lr: 1e-3
+  weight_decay: 1e-4
+  optimizer: "Adam"  # Adam | SGD | AdamW
+
+  # Learning rate scheduler
+  scheduler: "cosine"  # cosine | step | none
+  warmup_epochs: 5
+
+  # Early stopping
+  early_stopping_patience: 30
+  metric_for_best: "oscr"  # oscr | auroc | closed_set_acc | overall_acc
+
+  # Checkpointing
+  checkpoint_dir: "./checkpoints_openset"
+  save_interval: 50  # Save checkpoint every N epochs
+
+# ------------------------------------------------------------
+# Evaluation Configuration
+# ------------------------------------------------------------
+evaluation:
+  # Long-tail grouping thresholds
+  many_thresh: 100
+  few_thresh: 20
+
+  # Metrics to track
+  primary_metrics:
+    - "closed_set_acc"
+    - "auroc"
+    - "aupr"
+    - "oscr"
+    - "overall_acc"
+
+  per_group_metrics:
+    - "many_shot_acc"
+    - "medium_shot_acc"
+    - "few_shot_acc"
+
+# ------------------------------------------------------------
+# Visualization Configuration (Optional)
+# ------------------------------------------------------------
+visualization:
+  enabled: true
+  plot_training_curves: true
+  plot_confusion_matrix: true
+  plot_tsne: true
+  plot_roc_curve: true
+  plot_pr_curve: true
+
+  save_dir: "./visualizations_openset"
+
+# ------------------------------------------------------------
+# Experiment Notes
+# ------------------------------------------------------------
+notes: |
+  Long-Tail Open-Set Recognition with Diffusion Models
+
+  Key Features:
+  1. Handles long-tail distribution (imbalance_ratio=100)
+  2. Open-set detection via diffusion-based reconstruction
+  3. Multiple open-set methods (OpenMax, ODIN, Energy, etc.)
+  4. Joint optimization of classification + open-set detection
+  5. Class-balanced contrastive learning
+
+  Innovation:
+  - Diffusion model in feature space (NOT for data augmentation)
+  - Reconstruction error as open-set score
+  - Joint long-tail + open-set loss
+
+  Expected Results:
+  - AUROC > 0.85 for open-set detection
+  - OSCR > 0.75 for joint classification + detection
+  - Balanced performance across head/tail classes
