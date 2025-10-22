@@ -43,7 +43,7 @@ model:
   name: "ConvNetADSB"
   dropout: 0.3
   use_attention: true
-  norm_kind: "batch_norm"
+  norm_kind: "auto"  # Options: "auto" (=bn), "bn", "gn", "ln"
 
 # -----------------------------------------------------------------------------
 # Stage 1: Representation Learning (Closed-Set)

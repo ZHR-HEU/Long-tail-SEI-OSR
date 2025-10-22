@@ -391,7 +391,24 @@ data:
 device: "cpu"
 ```
 
-### Q3: ImportError: No module named 'xxx'
+### Q3: ValueError: Unknown norm kind
+
+**错误**: `ValueError: Unknown norm kind: batch_norm`
+
+**解决方法**:
+```yaml
+# 在配置文件中修改 norm_kind
+model:
+  norm_kind: "auto"  # 支持的值: "auto", "bn", "gn", "ln"
+```
+
+**说明**: 模型只支持以下norm类型：
+- `"auto"`: 自动选择（默认为BatchNorm）
+- `"bn"`: BatchNorm1d
+- `"gn"`: GroupNorm
+- `"ln"`: LayerNorm
+
+### Q4: ImportError: No module named 'xxx'
 
 **解决方法**:
 ```bash
@@ -402,7 +419,7 @@ pip install scipy h5py pyyaml scikit-learn
 conda install scipy h5py pyyaml scikit-learn
 ```
 
-### Q4: Stage-1训练很慢
+### Q5: Stage-1训练很慢
 
 **可能原因和解决方法**:
 
@@ -424,7 +441,7 @@ model:
 device: "cuda"         # 改用GPU
 ```
 
-### Q5: 开集检测效果不好 (AUROC < 0.7)
+### Q6: 开集检测效果不好 (AUROC < 0.7)
 
 **调优建议**:
 
@@ -453,7 +470,7 @@ stage2:
   sampling_strategy: "class_uniform"  # 尝试完全平衡采样
 ```
 
-### Q6: 尾部类别准确率很低
+### Q7: 尾部类别准确率很低
 
 **调优建议**:
 
@@ -472,7 +489,7 @@ stage2:
   epochs: 300
 ```
 
-### Q7: 如何可视化训练过程？
+### Q8: 如何可视化训练过程？
 
 ```bash
 # 1. 实时监控训练日志
@@ -485,7 +502,7 @@ tensorboard --logdir ./checkpoints
 cat ./checkpoints/stage2/final_results.txt
 ```
 
-### Q8: 如何恢复中断的训练？
+### Q9: 如何恢复中断的训练？
 
 目前代码不支持自动恢复，但可以手动调整：
 
