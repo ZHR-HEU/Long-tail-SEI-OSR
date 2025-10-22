@@ -1,0 +1,171 @@
+# =============================================================================
+# Two-Stage Open-Set Training Configuration
+# =============================================================================
+#
+# This configuration implements a two-stage training strategy for long-tail
+# open-set recognition:
+#
+# Stage 1 (Representation Learning):
+#   - Focus on closed-set classification
+#   - Learn robust features on known classes
+#   - Optional: Use diffusion model to enhance features
+#   - No open-set detector involved yet
+#
+# Stage 2 (Classifier Retraining + Open-Set Detection):
+#   - Freeze backbone (CRT mode) or use small LR (fine-tuning mode)
+#   - Reinitialize and retrain classifier with resampling/reweighting
+#   - Fit and update open-set detector
+#   - Focus on both long-tail balance and open-set detection
+# =============================================================================
+
+exp_name: "openset_twostage_crt"
+seed: 42
+device: "cuda"
+
+# -----------------------------------------------------------------------------
+# Data Configuration
+# -----------------------------------------------------------------------------
+data:
+  path_train: "./data/adsb_signals_train.pt"
+  num_known_classes: 6          # Number of known classes
+  split_protocol: "random"      # "random" or "semantic"
+  imbalance_ratio: 100.0        # Long-tail imbalance ratio
+  batch_size: 256
+  num_workers: 4
+  target_length: 1024
+  normalize: true
+
+# -----------------------------------------------------------------------------
+# Model Configuration
+# -----------------------------------------------------------------------------
+model:
+  name: "ConvNetADSB"
+  dropout: 0.3
+  use_attention: true
+  norm_kind: "batch_norm"
+
+# -----------------------------------------------------------------------------
+# Stage 1: Representation Learning (Closed-Set)
+# -----------------------------------------------------------------------------
+stage1:
+  enabled: true
+  epochs: 200
+
+  # Data augmentation and sampling
+  augmentation: true
+  sampling_strategy: "none"     # Natural distribution for Stage-1
+
+  # Optimizer
+  optimizer: "Adam"
+  lr: 1e-3
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  warmup_epochs: 10
+
+  # Loss function (closed-set only)
+  loss:
+    name: "Focal"               # Options: CrossEntropy, Focal, LDAM, BalancedSoftmax
+    gamma: 2.0                  # For Focal loss
+
+  # Diffusion model (optional, for feature enhancement)
+  diffusion:
+    enabled: false              # Set to true to use diffusion in Stage-1
+    hidden_dims: [512, 256]
+    timesteps: 1000
+    beta_schedule: "linear"
+    conditional: true
+    dropout: 0.1
+    enhanced: true
+    loss_weight: 0.1            # Weight of diffusion loss
+
+  # Training settings
+  early_stopping_patience: 30
+  checkpoint_dir: "./checkpoints/stage1"
+  console_log_interval: 5
+
+# -----------------------------------------------------------------------------
+# Stage 2: Classifier Retraining + Open-Set Detection
+# -----------------------------------------------------------------------------
+stage2:
+  enabled: true
+  epochs: 200
+
+  # Mode: "crt" (freeze backbone) or "finetune" (small LR for backbone)
+  mode: "crt"                   # Recommended: crt
+
+  # Batch Normalization: "freeze" or "train"
+  bn_mode: "freeze"             # Keep BN statistics from Stage-1
+
+  # Data augmentation and sampling
+  augmentation: true
+  sampling_strategy: "progressive_power"  # Progressive resampling
+  alpha_start: 0.5              # Starting alpha for power sampling
+  alpha_end: 0.0                # Ending alpha (moves toward uniform)
+
+  # Optimizer
+  optimizer: "Adam"
+
+  # Learning rates
+  lr_classifier: 1e-3           # LR for classifier (always used)
+  lr_backbone: 1e-5             # LR for backbone (only used in finetune mode)
+
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  warmup_epochs: 5
+
+  # Loss function
+  loss:
+    name: "CostSensitiveCE"     # Cost-sensitive cross-entropy
+    # Options: CrossEntropy, CostSensitiveCE, Focal, LDAM
+
+  # Diffusion model
+  diffusion:
+    enabled: false              # Usually disabled in Stage-2
+    loss_weight: 0.05           # Lower weight if enabled
+
+  # Open-Set Detector Configuration
+  openset:
+    detector_type: "openmax"    # Options: openmax, odin, energy, mahalanobis, msp
+
+    # Detector refitting schedule
+    refit_interval: 20          # Refit detector every N epochs
+    refit_on_start: true        # Fit detector before Stage-2 training
+
+    # OpenMax specific parameters
+    openmax:
+      tailsize: 20              # Number of samples per class for EVT fitting
+      alpharank: 3              # Number of top classes to revise
+      distance_metric: "cosine" # Distance metric for MAV computation
+
+    # ODIN specific parameters
+    odin:
+      temperature: 1000.0
+      epsilon: 0.0012
+
+    # Energy specific parameters
+    energy:
+      temperature: 1.0
+
+    # Mahalanobis specific parameters
+    mahalanobis:
+      tune_temperature: true
+
+  # Training settings
+  early_stopping_patience: 30
+  metric_for_best: "oscr"       # Metric for selecting best model
+                                # Options: oscr, auroc, overall_acc
+  checkpoint_dir: "./checkpoints/stage2"
+  console_log_interval: 5
+
+# -----------------------------------------------------------------------------
+# Evaluation Settings
+# -----------------------------------------------------------------------------
+evaluation:
+  use_diffusion_score: false    # Use diffusion reconstruction error
+  save_predictions: true        # Save predictions for analysis
+  save_features: true           # Save extracted features
+
+# -----------------------------------------------------------------------------
+# Console Logging
+# -----------------------------------------------------------------------------
+console_log_interval: 5         # Print logs every N epochs
