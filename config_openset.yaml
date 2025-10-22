@@ -12,9 +12,9 @@ console_log_interval: 10
 # Data Configuration
 # ------------------------------------------------------------
 data:
-  # Data path (replace with your data)
-  path_train: "/path/to/your/train_data.mat"
-  path_test: "/path/to/your/test_data.mat"
+  # Data path
+  path_train: "/home/dell/md3/zhahaoran/data/ADS-B_Train_100X360-2_5-10-15-20dB.mat"
+  path_test: "/home/dell/md3/zhahaoran/data/ADS-B_test_100X40_5-10-15-20dB.mat"
 
   # Open-set configuration
   num_known_classes: 6  # Number of classes to use as "known"
