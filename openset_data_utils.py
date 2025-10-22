@@ -153,6 +153,52 @@ class OpenSetDataset(Dataset):
 
 
 # =============================================================================
+# Known-Class Training Dataset
+# =============================================================================
+
+class KnownClassSubset(Dataset):
+    """Subset wrapper that exposes remapped labels for known-class training."""
+
+    def __init__(
+        self,
+        base_subset: Subset,
+        remapped_labels: np.ndarray,
+        num_classes: int,
+    ):
+        if len(base_subset) != len(remapped_labels):
+            raise ValueError(
+                "base_subset and remapped_labels must have the same length"
+            )
+
+        self._subset = base_subset
+        self.labels = np.asarray(remapped_labels, dtype=np.int64)
+        self.num_classes = int(num_classes)
+        if self.num_classes < 0:
+            raise ValueError("num_classes must be non-negative")
+
+        if len(self.labels) == 0:
+            self.class_counts = np.zeros(self.num_classes, dtype=np.int64)
+        else:
+            self.class_counts = np.bincount(
+                self.labels, minlength=self.num_classes
+            )
+
+        # Expose underlying indices for reproducibility/debugging if available
+        self.indices = getattr(base_subset, "indices", None)
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return len(self._subset)
+
+    def __getitem__(self, idx: int):  # type: ignore[override]
+        x, _ = self._subset[idx]
+        return x, int(self.labels[idx])
+
+    @property
+    def dataset(self):
+        return self._subset.dataset
+
+
+# =============================================================================
 # Open-Set Data Splitter
 # =============================================================================
 
@@ -440,10 +486,70 @@ def create_longtail_openset_dataloaders(
         seed=seed,
     )
 
-    train_dataset, val_dataset, test_dataset = splitter.create_datasets(train_ratio=0.8)
+    train_subset, val_dataset, test_dataset = splitter.create_datasets(train_ratio=0.8)
+
+    train_indices = np.asarray(
+        getattr(train_subset, "indices", np.arange(len(train_subset))),
+        dtype=np.int64,
+    )
+    train_labels_original = splitter.all_labels[train_indices]
+    remapped_train_labels = np.array(
+        [splitter.label_map[int(l)] for l in train_labels_original],
+        dtype=np.int64,
+    )
+
+    apply_long_tail = imbalance_ratio > 1.0 and len(remapped_train_labels) > 0
+    if apply_long_tail:
+        print(f"\n[Creating Long-Tail Distribution]")
+        print(f"  - Imbalance ratio: {imbalance_ratio}")
+
+        rng = np.random.default_rng(seed)
+        class_counts_actual = np.bincount(
+            remapped_train_labels, minlength=num_known_classes
+        )
+        max_count = int(class_counts_actual.max())
+        min_count = max(int(max_count / imbalance_ratio), 1)
+
+        if num_known_classes > 1:
+            mu = np.log(imbalance_ratio) / (num_known_classes - 1)
+            class_counts_target = np.round(
+                max_count * np.exp(-mu * np.arange(num_known_classes))
+            ).astype(int)
+        else:
+            class_counts_target = np.array([max_count], dtype=int)
+
+        class_counts_target = np.maximum(class_counts_target, min_count)
+        class_counts_target = np.minimum(class_counts_target, class_counts_actual)
+        class_counts_target = np.where(
+            class_counts_actual == 0, 0, class_counts_target
+        )
+
+        selected_positions: List[np.ndarray] = []
+        for c in range(num_known_classes):
+            class_positions = np.where(remapped_train_labels == c)[0]
+            target = int(class_counts_target[c])
+            if target <= 0 or len(class_positions) == 0:
+                continue
+            if len(class_positions) > target:
+                chosen = rng.choice(class_positions, target, replace=False)
+            else:
+                chosen = class_positions
+            selected_positions.append(np.asarray(chosen, dtype=np.int64))
+
+        if selected_positions:
+            selected_positions = np.concatenate(selected_positions)
+            rng.shuffle(selected_positions)
+            train_indices = train_indices[selected_positions]
+            remapped_train_labels = remapped_train_labels[selected_positions]
+        else:
+            print(
+                "  - Warning: unable to construct long-tail schedule; retaining original training set."
+            )
+
+    train_subset = Subset(splitter.dataset, train_indices.tolist())
 
     # Apply transforms
-    train_dataset.dataset.transforms = transform_train
+    train_subset.dataset.transforms = transform_train
     val_dataset.known_dataset.dataset.transforms = transform_val
     if val_dataset.unknown_dataset is not None:
         val_dataset.unknown_dataset.dataset.transforms = transform_val
@@ -451,40 +557,20 @@ def create_longtail_openset_dataloaders(
     if test_dataset.unknown_dataset is not None:
         test_dataset.unknown_dataset.dataset.transforms = transform_val
 
-    # Create long-tail distribution for training set
-    if imbalance_ratio > 1.0:
-        print(f"\n[Creating Long-Tail Distribution]")
-        print(f"  - Imbalance ratio: {imbalance_ratio}")
+    train_dataset = KnownClassSubset(
+        train_subset,
+        remapped_train_labels,
+        num_known_classes,
+    )
 
-        # Compute target counts (exponential decay)
-        num_classes = num_known_classes
-        max_count = len(train_dataset) // num_classes
-        min_count = int(max_count / imbalance_ratio)
-
-        # Exponential decay
-        mu = np.log(imbalance_ratio) / (num_classes - 1)
-        class_counts_target = max_count * np.exp(-mu * np.arange(num_classes))
-        class_counts_target = np.maximum(class_counts_target, min_count).astype(int)
-
-        # Subsample training set to match target distribution
-        new_indices = []
-        for c in range(num_classes):
-            class_indices = np.where(train_dataset.labels == c)[0]
-            if len(class_indices) > class_counts_target[c]:
-                class_indices = np.random.choice(class_indices, class_counts_target[c], replace=False)
-            new_indices.extend(class_indices)
-
-        # Create new training dataset
-        original_indices = train_dataset.indices
-        new_absolute_indices = [original_indices[i] for i in new_indices]
-
-        train_dataset = Subset(train_dataset.dataset, new_absolute_indices)
-        train_dataset.labels = np.array([splitter.label_map[int(full_dataset.labels[i])] for i in new_absolute_indices])
-        train_dataset.num_classes = num_known_classes
-        train_dataset.class_counts = np.bincount(train_dataset.labels, minlength=num_known_classes)
-
+    if apply_long_tail and train_dataset.class_counts.size > 0:
         print(f"  - New train size: {len(train_dataset)}")
-        print(f"  - Class counts: min={train_dataset.class_counts.min()}, max={train_dataset.class_counts.max()}")
+        print(
+            "  - Class counts: min={}, max={}".format(
+                int(train_dataset.class_counts.min()),
+                int(train_dataset.class_counts.max()),
+            )
+        )
 
     # Create samplers
     sampler_train = make_sampler(
