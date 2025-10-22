@@ -343,6 +343,9 @@ def create_longtail_openset_dataloaders(
     augmentation: bool = True,
     sampling_strategy: str = "none",
     seed: int = 42,
+    alpha: float = 0.5,
+    alpha_start: float = 0.5,
+    alpha_end: float = 0.0,
     **kwargs,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict[str, Any]]:
     """
@@ -360,7 +363,10 @@ def create_longtail_openset_dataloaders(
         augmentation: Whether to use data augmentation
         sampling_strategy: Sampling strategy for long-tail
         seed: Random seed
-        **kwargs: Additional arguments
+        alpha: Alpha for power sampling
+        alpha_start: Starting alpha for progressive power sampling
+        alpha_end: Ending alpha for progressive power sampling
+        **kwargs: Additional arguments for dataset
 
     Returns:
         train_loader: Training dataloader
@@ -371,6 +377,14 @@ def create_longtail_openset_dataloaders(
     print("\n" + "=" * 80)
     print("Creating Long-Tail Open-Set DataLoaders")
     print("=" * 80)
+
+    # Separate sampler parameters from dataset parameters
+    sampler_params = {
+        'seed': seed,
+        'alpha': alpha,
+        'alpha_start': alpha_start,
+        'alpha_end': alpha_end,
+    }
 
     # Load full dataset
     transforms_train = []
@@ -393,13 +407,24 @@ def create_longtail_openset_dataloaders(
     transform_train = Compose(transforms_train)
     transform_val = Compose(transforms_val)
 
-    # Load dataset
+    # Load dataset (only pass supported parameters)
+    # Extract dataset-specific parameters from kwargs
+    dataset_params = {
+        'split': kwargs.get('split', None),
+        'data_key': kwargs.get('data_key', None),
+        'label_key': kwargs.get('label_key', None),
+        'in_memory': kwargs.get('in_memory', False),
+    }
+    # Remove None values
+    dataset_params = {k: v for k, v in dataset_params.items() if v is not None}
+
     full_dataset = ADSBSignalDataset(
         path=data_path,
         target_length=target_length,
         transforms=None,  # Will apply later
         normalize=False,  # Will apply later
-        **kwargs,
+        seed=seed,
+        **dataset_params,  # Only dataset-specific parameters
     )
 
     # Split into known/unknown
@@ -460,7 +485,7 @@ def create_longtail_openset_dataloaders(
     sampler_train = make_sampler(
         labels=train_dataset.labels,
         method=sampling_strategy,
-        **kwargs,
+        **sampler_params,  # Pass sampler-specific parameters
     )
 
     # Create dataloaders
