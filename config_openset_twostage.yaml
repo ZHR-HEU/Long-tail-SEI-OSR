@@ -43,7 +43,7 @@ model:
   name: "ConvNetADSB"
   dropout: 0.3
   use_attention: true
-  norm_kind: "batch_norm"
+  norm_kind: "auto"  # Options: "auto" (=bn), "bn", "gn", "ln"
 
 # -----------------------------------------------------------------------------
 # Stage 1: Representation Learning (Closed-Set)
@@ -65,8 +65,15 @@ stage1:
 
   # Loss function (closed-set only)
   loss:
-    name: "Focal"               # Options: CrossEntropy, Focal, LDAM, BalancedSoftmax
-    gamma: 2.0                  # For Focal loss
+    loss_type: "focal"          # Options: ce, focal, ldam, balanced_softmax, cb
+    use_diffusion: false        # Disable diffusion loss in Stage-1
+    use_contrastive: false      # Disable contrastive loss in Stage-1
+    use_entropy: false
+    use_objectosphere: false
+
+    # Focal loss parameters
+    gamma: 2.0
+    alpha: 0.25
 
   # Diffusion model (optional, for feature enhancement)
   diffusion:
@@ -116,8 +123,18 @@ stage2:
 
   # Loss function
   loss:
-    name: "CostSensitiveCE"     # Cost-sensitive cross-entropy
-    # Options: CrossEntropy, CostSensitiveCE, Focal, LDAM
+    loss_type: "balanced_softmax"  # Options: ce, focal, ldam, balanced_softmax, cb
+    use_diffusion: false           # Usually disabled in Stage-2
+    use_contrastive: true          # Enable contrastive for long-tail
+    use_entropy: false
+    use_objectosphere: false
+
+    # Loss weights
+    lambda_contrastive: 0.1
+
+    # Base loss parameters (for focal/ldam if needed)
+    gamma: 2.0
+    alpha: 0.25
 
   # Diffusion model
   diffusion:
