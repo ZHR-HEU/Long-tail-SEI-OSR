@@ -195,6 +195,7 @@ def main(config: Dict[str, Any]):
         num_classes=num_known_classes,
         input_shape=input_shape[1:],
     )
+    model = model.to(device)
 
     print(f"Model created: {config['model']['name']}")
 
