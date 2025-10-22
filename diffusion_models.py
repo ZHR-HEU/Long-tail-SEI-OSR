@@ -129,7 +129,17 @@ class FeatureDiffusion(nn.Module):
                            torch.log(torch.clamp(posterior_variance, min=1e-20)))
 
         # Time embedding
-        time_embed_dim = feature_dim // 4
+        # NOTE: the sinusoidal embedding implementation below assumes an even
+        # dimensionality because it concatenates sine and cosine pairs of size
+        # ``dim // 2``.  When ``feature_dim`` is not divisible by eight (e.g.
+        # 348 -> 348 // 4 = 87), using ``feature_dim // 4`` would yield an odd
+        # ``time_embed_dim`` which subsequently makes the embedding one element
+        # smaller than expected and breaks the following linear layer.  We
+        # therefore round up to the nearest even value and clamp to at least
+        # two dimensions to keep the downstream layers well-defined.
+        time_embed_dim = max(2, feature_dim // 4)
+        if time_embed_dim % 2 == 1:
+            time_embed_dim += 1
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_embed_dim),
             nn.Linear(time_embed_dim, time_embed_dim * 4),
