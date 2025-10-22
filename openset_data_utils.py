@@ -29,13 +29,13 @@ from torch.utils.data import Dataset, DataLoader, Subset
 
 # Import base utilities
 from data_utils import (
-    SignalDataset,
-    get_sampler,
+    ADSBSignalDataset,
+    make_sampler,
     Compose,
     ToTensor,
     RandomTimeShift,
     RandomAmplitude,
-    RandomNoise,
+    RandomGaussianNoise,
     PerSampleNormalize,
 )
 
@@ -380,7 +380,7 @@ def create_longtail_openset_dataloaders(
         transforms_train.extend([
             RandomTimeShift(max_shift=100, p=0.5),
             RandomAmplitude(p=0.5),
-            RandomNoise(p=0.5),
+            RandomGaussianNoise(p=0.5),
         ])
 
     if normalize:
@@ -394,10 +394,10 @@ def create_longtail_openset_dataloaders(
     transform_val = Compose(transforms_val)
 
     # Load dataset
-    full_dataset = SignalDataset(
-        data_path=data_path,
+    full_dataset = ADSBSignalDataset(
+        path=data_path,
         target_length=target_length,
-        transform=None,  # Will apply later
+        transforms=None,  # Will apply later
         normalize=False,  # Will apply later
         **kwargs,
     )
@@ -413,13 +413,13 @@ def create_longtail_openset_dataloaders(
     train_dataset, val_dataset, test_dataset = splitter.create_datasets(train_ratio=0.8)
 
     # Apply transforms
-    train_dataset.dataset.transform = transform_train
-    val_dataset.known_dataset.dataset.transform = transform_val
+    train_dataset.dataset.transforms = transform_train
+    val_dataset.known_dataset.dataset.transforms = transform_val
     if val_dataset.unknown_dataset is not None:
-        val_dataset.unknown_dataset.dataset.transform = transform_val
-    test_dataset.known_dataset.dataset.transform = transform_val
+        val_dataset.unknown_dataset.dataset.transforms = transform_val
+    test_dataset.known_dataset.dataset.transforms = transform_val
     if test_dataset.unknown_dataset is not None:
-        test_dataset.unknown_dataset.dataset.transform = transform_val
+        test_dataset.unknown_dataset.dataset.transforms = transform_val
 
     # Create long-tail distribution for training set
     if imbalance_ratio > 1.0:
@@ -457,10 +457,9 @@ def create_longtail_openset_dataloaders(
         print(f"  - Class counts: min={train_dataset.class_counts.min()}, max={train_dataset.class_counts.max()}")
 
     # Create samplers
-    sampler_train = get_sampler(
+    sampler_train = make_sampler(
         labels=train_dataset.labels,
-        num_classes=train_dataset.num_classes,
-        strategy=sampling_strategy,
+        method=sampling_strategy,
         **kwargs,
     )
 
